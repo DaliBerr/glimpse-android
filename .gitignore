@@ -21,3 +21,4 @@ __pycache__/
 !.env.example
 **/release.properties
 **/signing.properties
+.codex-remote-attachments/
