@@ -9,7 +9,9 @@
 | `testDebugUnitTest` | 30 项通过、1 项跳过，0 失败 |
 | `lintDebug` | 通过，0 错误 |
 | `assembleDebug` / `assembleDebugAndroidTest` | 通过 |
-| `assembleRelease` | 通过，生成未签名 APK；包名 `com.albumclean.app`、版本 1.0.2、构建号 3 |
+| `assembleRelease` | 通过，使用原正式密钥签名；包名 `com.albumclean.app`、版本 1.0.2、构建号 3 |
+| Android 14 / API 34 模拟器设备测试 | 10 项通过，0 失败，包含真实 MediaStore 回归和更新器测试 |
+| Release APK 签名 | APK Signature Scheme v2 校验通过，与已发布 1.0.1 的证书一致 |
 
 新增覆盖：
 
@@ -19,9 +21,11 @@
 - 部分权限、权限在查询中被撤销、存储卷离线、查询返回 `null` 或抛出异常时保留记录。
 - 照片仍在写入或同一 URI 的文件已被修改时，不提交旧记录对应的删除请求。
 
-测试使用受控的 MediaStore Provider；API 29 的卷枚举使用测试框架配置的挂载卷，以补齐 Robolectric 未提供的存储 Binder 数据。本次没有运行模拟器或真机设备测试。`PhotoCleanDeviceTest` 新增了对应真实 MediaStore 用例；更新器的设备测试样本版本也改为跟随当前构建。
+JVM 测试使用受控的 MediaStore Provider；API 29 的卷枚举使用测试框架配置的挂载卷，以补齐 Robolectric 未提供的存储 Binder 数据。设备测试在 Android 14 模拟器上运行，对应真实 MediaStore 的外部删除、回收站、部分访问和删除前再核对场景；更新器使用当前正式签名 APK 验证下载、缓存、签名和安装意图。
 
-正式签名配置未在本次构建环境提供，正式 APK 尚未发布；需要使用原签名环境完成覆盖更新包的发布。
+完整设备测试首次运行发现用例共用照片样本，导致已删除记录影响后续用例。改为每个用例独立生成样本后，10 项全部通过。生产逻辑未因该测试隔离修正而改变。
+
+正式构建在保留原密钥的本机完成。证书 SHA-256 为 `47b4732d832313babf6bd66d97230d07c4ed832cc2c077ed6b70bbb286777cf1`。签名配置和私钥不进入 Git 或发布附件。本轮构建日志与设备测试结果分别保存在本机 `artifacts/release-1.0.2-build.log`、`artifacts/release-1.0.2-device.log`。尚未进行真机测试。
 
 ## 1.0.1 验证记录
 

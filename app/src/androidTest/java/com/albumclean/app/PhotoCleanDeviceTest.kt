@@ -25,7 +25,8 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class PhotoCleanDeviceTest {
-    companion object { private val samplePrefix = "PhotoClean_Sample_${System.currentTimeMillis()}_" }
+    // Each test owns its samples; terminal DELETED decisions must not leak into another case.
+    private val samplePrefix = "PhotoClean_Sample_${java.util.UUID.randomUUID()}_"
     @get:Rule val compose = createAndroidComposeRule<MainActivity>()
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
 
