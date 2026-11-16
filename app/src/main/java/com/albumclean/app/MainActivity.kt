@@ -28,6 +28,7 @@ class MainActivity : ComponentActivity() {
     private var remainingDeletes = arrayListOf<String>()
     private var activeBatch = arrayListOf<String>()
     private var requestInFlight = false
+    private var skippedDeletes = false
     private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         model.refresh()
         if (model.access() == PhotoAccess.NONE) model.notify("需要照片权限才能开始整理，可在设置中开启。")
@@ -59,6 +60,7 @@ class MainActivity : ComponentActivity() {
         remainingDeletes = savedInstanceState?.getStringArrayList("deleteQueue") ?: arrayListOf()
         activeBatch = savedInstanceState?.getStringArrayList("deleteBatch") ?: arrayListOf()
         requestInFlight = savedInstanceState?.getBoolean("deleteInFlight") ?: false
+        skippedDeletes = savedInstanceState?.getBoolean("deleteSkipped") ?: false
         model.setDeleting(requestInFlight)
         enableEdgeToEdge()
         setContent {
@@ -74,6 +76,7 @@ class MainActivity : ComponentActivity() {
         outState.putStringArrayList("deleteQueue", remainingDeletes)
         outState.putStringArrayList("deleteBatch", activeBatch)
         outState.putBoolean("deleteInFlight", requestInFlight)
+        outState.putBoolean("deleteSkipped", skippedDeletes)
         super.onSaveInstanceState(outState)
     }
 
@@ -102,19 +105,24 @@ class MainActivity : ComponentActivity() {
 
     private fun startDeletion(photos: List<Photo>) {
         if (model.state.value.busy || remainingDeletes.isNotEmpty()) return
-        val accessible = model.state.value.photos.mapTo(HashSet()) { it.key }
-        remainingDeletes = ArrayList(photos.filter { it.key in accessible }.map { it.key })
+        remainingDeletes = ArrayList(photos.map { it.key }.distinct())
         if (remainingDeletes.isEmpty()) { model.notify("这些照片暂时无法访问，请先重新授权或移出清单。"); return }
+        skippedDeletes = false
         model.setDeleting(true)
         lifecycleScope.launch { deleteNext() }
     }
 
     private suspend fun deleteNext(approvedLegacyKey: String? = null) {
         while (remainingDeletes.isNotEmpty()) {
-            val pending = model.state.value.pending.associateBy { it.key }
-            val photos = remainingDeletes.mapNotNull { pending[it] }
-            if (photos.isEmpty()) break
             try {
+                // A gallery can remove a photo after our foreground refresh or between batches.
+                val plan = model.prepareDeletion(remainingDeletes.take(200))
+                val ready = plan.ready.mapTo(HashSet()) { it.key }
+                val checked = remainingDeletes.take(200).toSet()
+                remainingDeletes.removeAll { it in checked && it !in ready }
+                skippedDeletes = skippedDeletes || plan.unavailable.isNotEmpty()
+                val photos = plan.ready
+                if (photos.isEmpty()) continue
                 if (Build.VERSION.SDK_INT >= 30) {
                     // A conservative chunk size keeps requests small across Android releases.
                     val batch = photos.take(200)
@@ -142,11 +150,11 @@ class MainActivity : ComponentActivity() {
                 return
             }
         }
-        finishDeletion("删除完成，给相册腾出了一点空间。")
+        finishDeletion(if (skippedDeletes) "已处理可访问的照片，其余照片暂时无法访问，仍保留在清单中。" else "删除完成，给相册腾出了一点空间。")
     }
 
     private fun finishDeletion(message: String) {
-        remainingDeletes.clear(); activeBatch.clear(); requestInFlight = false
+        remainingDeletes.clear(); activeBatch.clear(); requestInFlight = false; skippedDeletes = false
         model.setDeleting(false)
         model.notify(message)
         model.refresh()

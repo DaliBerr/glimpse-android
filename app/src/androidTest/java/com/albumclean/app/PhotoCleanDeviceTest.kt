@@ -7,7 +7,9 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.os.Build
+import android.net.Uri
 import android.provider.MediaStore
+import androidx.lifecycle.ViewModelProvider
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -16,6 +18,7 @@ import com.albumclean.app.data.*
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Before
+import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -86,6 +89,85 @@ class PhotoCleanDeviceTest {
         assertTrue(reloaded.photo.takenAt > 0)
         repository.restore(photo.key)
         assertFalse(PhotoRepository(context).decisions().any { it.photo.key == photo.key })
+    }
+
+    @Test fun externalDeletionIsRemovedFromPendingAndStaysRemovedAfterReload() = runBlocking {
+        val repository = PhotoRepository(context)
+        val (gone, kept, pending) = repository.photos().filter { it.name.startsWith(samplePrefix) }.take(3)
+        listOf(gone, kept, pending).forEach { repository.restore(it.key) }
+        repository.decide(gone, Choice.DELETE)
+        repository.decide(kept, Choice.KEEP)
+        repository.decide(pending, Choice.DELETE)
+        assertEquals(1, context.contentResolver.delete(Uri.parse(gone.uri), null, null))
+
+        val decisions = repository.reconcilePendingDeletes(repository.photos(), hasFullAccess = true).associateBy { it.photo.key }
+        assertEquals(Choice.DELETED, decisions.getValue(gone.key).choice)
+        assertEquals(Choice.KEEP, decisions.getValue(kept.key).choice)
+        assertEquals(Choice.DELETE, decisions.getValue(pending.key).choice)
+        assertEquals(Choice.DELETED, PhotoRepository(context).decisions().first { it.photo.key == gone.key }.choice)
+        repository.restore(kept.key)
+        repository.restore(pending.key)
+    }
+
+    @Test fun systemTrashIsReconciledWithoutPermanentlyDeletingTheOriginal() = runBlocking {
+        assumeTrue(Build.VERSION.SDK_INT >= 30)
+        val repository = PhotoRepository(context)
+        val photo = repository.photos().first { it.name.startsWith(samplePrefix) }
+        repository.restore(photo.key)
+        repository.decide(photo, Choice.DELETE)
+        val uri = Uri.parse(photo.uri)
+        try {
+            assertEquals(1, context.contentResolver.update(uri, ContentValues().apply {
+                put(MediaStore.Images.Media.IS_TRASHED, 1)
+            }, null, null))
+            assertEquals(PhotoAvailability.REMOVED, repository.availability(photo, hasFullAccess = true))
+            val decisions = repository.reconcilePendingDeletes(repository.photos(), hasFullAccess = true)
+            assertEquals(Choice.DELETED, decisions.first { it.photo.key == photo.key }.choice)
+            // A refresh only reconciles our SQLite record; the system trash still owns the file.
+            val args = android.os.Bundle().apply { putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_INCLUDE) }
+            context.contentResolver.query(uri, arrayOf(MediaStore.Images.Media.IS_TRASHED), args, null)!!.use {
+                assertTrue(it.moveToFirst())
+                assertEquals(1, it.getInt(0))
+            }
+        } finally {
+            context.contentResolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_TRASHED, 0) }, null, null)
+        }
+    }
+
+    @Test fun partialAccessAndDisconnectedStorageDoNotDiscardPendingRecords() = runBlocking {
+        val repository = PhotoRepository(context)
+        val photo = repository.photos().first { it.name.startsWith(samplePrefix) }
+        repository.restore(photo.key)
+        repository.decide(photo, Choice.DELETE)
+        context.contentResolver.delete(Uri.parse(photo.uri), null, null)
+        val plan = repository.planDeletion(listOf(photo), hasFullAccess = false)
+        assertTrue(plan.ready.isEmpty())
+        assertTrue(plan.removed.isEmpty())
+        assertEquals(listOf(photo.key), plan.unavailable)
+        val decisions = repository.reconcilePendingDeletes(emptyList(), hasFullAccess = false)
+        assertEquals(Choice.DELETE, decisions.first { it.photo.key == photo.key }.choice)
+
+        val disconnected = photo.copy(uri = "content://media/absent_test_volume/images/media/1")
+        assertEquals(PhotoAvailability.UNAVAILABLE, repository.availability(disconnected, hasFullAccess = true))
+        repository.deleted(listOf(photo.key))
+    }
+
+    @Test fun deletionPreparationRechecksPhotosRemovedAfterForegroundRefresh() = runBlocking {
+        val repository = PhotoRepository(context)
+        val (gone, present) = repository.photos().filter { it.name.startsWith(samplePrefix) }.take(2)
+        listOf(gone, present).forEach { repository.restore(it.key); repository.decide(it, Choice.DELETE) }
+        lateinit var model: PhotoViewModel
+        compose.runOnIdle { model = ViewModelProvider(compose.activity)[PhotoViewModel::class.java] }
+        model.refresh().join()
+        assertTrue(model.state.value.pending.any { it.key == gone.key })
+        context.contentResolver.delete(Uri.parse(gone.uri), null, null)
+
+        val plan = model.prepareDeletion(listOf(gone.key, present.key))
+        assertEquals(listOf(gone.key), plan.removed)
+        assertEquals(listOf(present.key), plan.ready.map { it.key })
+        assertFalse(model.state.value.pending.any { it.key == gone.key })
+        assertTrue(model.state.value.pending.any { it.key == present.key })
+        repository.restore(present.key)
     }
 
     private fun currentDescription(): String = compose.onNodeWithTag("photo_card").fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.ContentDescription].first()

@@ -26,6 +26,8 @@ data class Photo(
 }
 
 enum class Choice { KEEP, DELETE, DELETED }
+enum class PhotoAvailability { AVAILABLE, REMOVED, UNAVAILABLE }
+data class DeletionPlan(val ready: List<Photo>, val removed: List<String>, val unavailable: List<String>)
 data class Decision(val photo: Photo, val choice: Choice, val order: Long)
 enum class ThemeMode(val label: String) { SYSTEM("跟随系统"), LIGHT("浅色"), DARK("深色") }
 

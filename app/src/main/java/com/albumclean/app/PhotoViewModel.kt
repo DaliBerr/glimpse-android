@@ -54,8 +54,10 @@ class PhotoViewModel(application: Application) : AndroidViewModel(application) {
             val access = access()
             mutableState.value = state.value.copy(access = access)
             try {
-                val decisions = repository.decisions()
                 val photos = if (access != PhotoAccess.NONE) repository.photos() else emptyList()
+                val decisions = if (access != PhotoAccess.NONE) {
+                    repository.reconcilePendingDeletes(photos, access == PhotoAccess.FULL)
+                } else repository.decisions()
                 val deck = buildDeck(state.value.deck, photos, decisions)
                 mutableState.value = state.value.copy(loading = false, access = access, photos = enrichCurrent(photos, deck),
                     decisions = decisions, deck = deck, error = null)
@@ -116,6 +118,17 @@ class PhotoViewModel(application: Application) : AndroidViewModel(application) {
         val decisions = repository.decisions()
         mutableState.value = state.value.copy(decisions = decisions,
             photos = state.value.photos.filterNot { it.key in keys }, deck = state.value.deck.filterNot { it in keys })
+    }
+
+    /** Recheck immediately before each system request, including after returning from consent. */
+    suspend fun prepareDeletion(keys: List<String>): DeletionPlan = mutex.withLock {
+        val pending = repository.decisions().filter { it.choice == Choice.DELETE }.associateBy { it.photo.key }
+        val plan = repository.planDeletion(keys.mapNotNull { pending[it]?.photo }, access() == PhotoAccess.FULL)
+        if (plan.removed.isNotEmpty()) repository.deleted(plan.removed)
+        val removed = plan.removed.toHashSet()
+        mutableState.value = state.value.copy(decisions = repository.decisions(),
+            photos = state.value.photos.filterNot { it.key in removed }, deck = state.value.deck.filterNot { it in removed })
+        plan
     }
 
     fun resetKept() {

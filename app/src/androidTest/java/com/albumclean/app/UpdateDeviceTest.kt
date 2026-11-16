@@ -103,7 +103,7 @@ class UpdateDeviceTest {
     private suspend fun wait(updater: AppUpdater, stage: UpdateStage) { withTimeout(20_000) { updater.state.first { it.stage == stage } } }
 
     private class Fixture(val bytes: ByteArray) : UpdateTransport {
-        val release = Release("1.0.1", 2, bytes.size.toLong(), sha256(bytes), "a".repeat(40))
+        val release = Release(BuildConfig.VERSION_NAME.removeSuffix("-debug"), BuildConfig.VERSION_CODE.toLong(), bytes.size.toLong(), sha256(bytes), "a".repeat(40))
         var badManifest = false
         @Volatile var delay = false
         @Volatile var started = false
